@@ -5,22 +5,18 @@ import argparse
 import onnxruntime as ort
 from rknnlite.api import RKNNLite
 import tensorflow as tf
+import time
 
-# add path
-realpath = os.path.abspath(__file__)
-_sep = os.path.sep
-realpath = realpath.split(_sep)
 
 from coco_utils import COCO_test_helper
 import numpy as np
 
+realpath = os.path.abspath(__file__)
+_sep = os.path.sep
+realpath = realpath.split(_sep)
 
 OBJ_THRESH = 0.25
 NMS_THRESH = 0.4
-
-# The follew two param is for map test
-# OBJ_THRESH = 0.001
-# NMS_THRESH = 0.65
 
 IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
@@ -41,7 +37,6 @@ def filter_boxes(boxes, box_confidences, box_class_probs):
     """Filter boxes with object threshold.
     """
     box_confidences = box_confidences.reshape(-1)
-    candidate, class_num = box_class_probs.shape
 
     class_max_score = np.max(box_class_probs, axis=-1)
     classes = np.argmax(box_class_probs, axis=-1)
@@ -88,7 +83,6 @@ def nms_boxes(boxes, scores):
     return keep
 
 def dfl(position):
-    # Distribution Focal Loss (DFL)
     import torch
     x = torch.tensor(position)
     n,c,h,w = x.shape
@@ -137,11 +131,7 @@ def post_process(input_data):
     boxes = np.concatenate(boxes)
     classes_conf = np.concatenate(classes_conf)
     scores = np.concatenate(scores)
-
-    # filter according to threshold
     boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
-
-    # nms
     nboxes, nclasses, nscores = [], [], []
     for c in set(classes):
         inds = np.where(classes == c)
@@ -193,7 +183,6 @@ def generate_frames(video_path):
         if not ret:
             break
         # frame = frame.transpose(2, 0, 1).astype('float32') / 255.0
-        # frame = frame.transpose(2, 0, 1)
         frame = np.expand_dims(frame, axis=0)
         yield frame
     cap.release()
@@ -211,14 +200,14 @@ def run(model, args, frame):
         return model.get_tensor(output_details[0]['index'])
 
 if __name__ == '__main__':
+    frame_start = 0
+    frame_end = 0
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, required= True, help='model path, could be .pt or .rknn file')
+    parser.add_argument('--model_path', type=str, required= True, help='model path')
     parser.add_argument('--video_path', type=str, required=True, help='img folder path')
     parser.add_argument('--model', type=str, required=True, help="type of model: rknn/onnx/tflite")
 
     args = parser.parse_args()
-
-    # init model
     model, typ = setup_model(args)
 
     frames = generate_frames(args.video_path)
@@ -226,18 +215,20 @@ if __name__ == '__main__':
     co_helper = COCO_test_helper(enable_letter_box=False)
     
     hostip = "10.10.243.13"
-    gst_out = gst_out = f'appsrc ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! rtph264pay config-interval=1 pt=96 ! udpsink host={hostip} port=5000 auto-multicast=true'
-    # file = "output.mp4"
-    # out = cv2.VideoWriter("output.mp4", cv2.VideoWriter.fourcc(*'mp4v'), 30, (640, 640))
+    gst_out = f'appsrc ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! rtph264pay config-interval=1 pt=96 ! udpsink host={hostip} port=5000 auto-multicast=true'
+
     out = cv2.VideoWriter(gst_out, cv2.CAP_GSTREAMER, 0, 30, (640, 640), True)
 
     for frame in frames:
         img_p = frame.copy()[0]
         # img_p = (frame.copy()*255.0).astype(np.uint8)[0].transpose(1,2,0).copy()
-        # print(img_p.shape)
         outputs = run(model, args, frame)
         boxes, classes, scores = post_process(outputs)
         if boxes is not None:
             draw(img_p, co_helper.get_real_box(boxes), scores, classes)    
+        frame_end = time.time()
+        fps = 1/(frame_end - frame_start)
+        frame_start = frame_end
+        cv2.putText(img_p, str(fps), (7, 70),  cv2.FONT_HERSHEY_SIMPLEX, 3, (100, 255, 0), 3, cv2.LINE_AA)
         out.write(img_p)
     out.release()
